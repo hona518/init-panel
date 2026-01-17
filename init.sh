@@ -3,7 +3,7 @@
 set -e
 
 # ================================
-# init-panel 一键初始化脚本（最终版）
+# init-panel 一键初始化脚本（最终修复版）
 # ================================
 
 # -------- 基础变量 --------
@@ -95,11 +95,25 @@ info "获取验证文件"
 
 VALIDATION=$(curl -s "https://api.zerossl.com/certificates/$CERT_ID?access_key=$ZEROSSL_API_KEY")
 
-FILE_CONTENT=$(echo "$VALIDATION" | grep -o '"file_validation_content":"[^"]*' | cut -d'"' -f4)
-FILE_PATH=$(echo "$VALIDATION" | grep -o '"file_validation_path":"[^"]*' | cut -d'"' -f4)
+# 提取验证文件内容（数组 → 多行文本）
+FILE_CONTENT=$(echo "$VALIDATION" | grep -o '"file_validation_content":
 
-if [ -z "$FILE_PATH" ]; then
-  error "无法获取验证文件信息：$VALIDATION"
+\[[^]]*' \
+  | sed 's/"file_validation_content":
+
+\[//' \
+  | sed 's/\]
+
+//' \
+  | tr -d '"' \
+  | tr ',' '\n')
+
+# 提取验证文件路径（从 URL 中提取路径部分）
+FILE_URL=$(echo "$VALIDATION" | grep -o '"file_validation_url_http":"[^"]*' | cut -d'"' -f4)
+FILE_PATH=$(echo "$FILE_URL" | sed 's#http://[^/]*##')
+
+if [ -z "$FILE_PATH" ] || [ -z "$FILE_CONTENT" ]; then
+  error "无法解析验证文件信息：$VALIDATION"
 fi
 
 info "写入验证文件：$FILE_PATH"
@@ -116,7 +130,8 @@ curl -s -X POST "https://api.zerossl.com/certificates/$CERT_ID/challenges?access
 info "等待 ZeroSSL 验证..."
 
 while true; do
-  STATUS=$(curl -s "https://api.zerossl.com/certificates/$CERT_ID?access_key=$ZEROSSL_API_KEY" | grep -o '"status":"[^"]*' | cut -d'"' -f4)
+  STATUS=$(curl -s "https://api.zerossl.com/certificates/$CERT_ID?access_key=$ZEROSSL_API_KEY" \
+    | grep -o '"status":"[^"]*' | cut -d'"' -f4)
 
   if [ "$STATUS" = "issued" ]; then
     info "证书已签发"
