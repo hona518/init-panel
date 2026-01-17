@@ -13,10 +13,10 @@ WEB_DIR="$PANEL_DIR/web"
 BIN_PATH="$PANEL_DIR/panel"
 SERVICE_FILE="/etc/systemd/system/init-panel.service"
 
-# -------- 用户配置（你可在仓库中预填） --------
-EMAIL="your@email.com"
-ZEROSSL_EAB_KID="your_eab_kid"
-ZEROSSL_EAB_HMAC="your_eab_hmac"
+# -------- 用户配置（已替换为你提供的 EAB） --------
+EMAIL="admin@example.com"
+ZEROSSL_EAB_KID="LNySi-BXwKx1B_fOUpq-Ag"
+ZEROSSL_EAB_HMAC="sn8twIvLZ9Xdd2MY379wd9E4XQTEtTx4Blwpgbd__WvePyYRDTNr4HPGd5NWzENyDRQfyRXxL5EF_KmstMahMg"
 
 # -------- 自动检测服务器 IP --------
 SERVER_IP=$(curl -s ipv4.ip.sb || curl -s ifconfig.me)
