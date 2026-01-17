@@ -3,7 +3,7 @@
 set -e
 
 echo "==========================================="
-echo " Reality Panel 一键安装脚本（Let’s Encrypt，无邮箱版本）"
+echo " Reality Panel 一键安装脚本（ZeroSSL + EAB 自动注册版）"
 echo "==========================================="
 
 # -----------------------------
@@ -100,26 +100,42 @@ echo "[6/10] 安装 acme.sh..."
 curl https://get.acme.sh | sh
 
 # -----------------------------
-# 7. 使用 Let’s Encrypt 申请 IP 证书（无邮箱）
+# 7. ZeroSSL + EAB 自动注册
 # -----------------------------
-echo "[7/10] 申请 Let’s Encrypt IP 证书..."
+echo "[7/10] ZeroSSL ACME 注册..."
 
-# 匿名注册，无邮箱
-~/.acme.sh/acme.sh --register-account --server letsencrypt
+# 如果未传入环境变量，则交互输入
+if [ -z "$ZEROSSL_EAB_KID" ] || [ -z "$ZEROSSL_EAB_HMAC" ]; then
+  echo "请输入 ZeroSSL EAB Key ID："
+  read -r ZEROSSL_EAB_KID
+  echo "请输入 ZeroSSL EAB HMAC Key："
+  read -r ZEROSSL_EAB_HMAC
+fi
 
-# 申请 IP 证书
-~/.acme.sh/acme.sh --issue --insecure --standalone -d $SERVER_IP --keylength ec-256 --server letsencrypt
+# 注册 ZeroSSL ACME 账户
+~/.acme.sh/acme.sh --register-account \
+  --server zerossl \
+  --eab-kid "$ZEROSSL_EAB_KID" \
+  --eab-hmac-key "$ZEROSSL_EAB_HMAC" \
+  -m admin@example.com
 
-# 安装证书
-~/.acme.sh/acme.sh --install-cert -d $SERVER_IP \
+# -----------------------------
+# 8. 申请 ZeroSSL IP 证书
+# -----------------------------
+echo "[8/10] 申请 ZeroSSL IP 证书..."
+
+~/.acme.sh/acme.sh --issue --insecure --standalone \
+  -d "$SERVER_IP" --keylength ec-256 --server zerossl
+
+~/.acme.sh/acme.sh --install-cert -d "$SERVER_IP" \
   --key-file       $CERT_DIR/panel.key \
   --fullchain-file $CERT_DIR/panel.crt \
   --reloadcmd     "systemctl restart reality-panel"
 
 # -----------------------------
-# 8. 安装 panel 后端
+# 9. 安装 panel 后端
 # -----------------------------
-echo "[8/10] 安装 panel 后端..."
+echo "[9/10] 安装 panel 后端..."
 
 wget -O $PANEL_BIN $PANEL_DOWNLOAD_URL
 chmod +x $PANEL_BIN
@@ -142,17 +158,12 @@ systemctl daemon-reload
 systemctl enable reality-panel
 
 # -----------------------------
-# 9. 安装 web 前端
+# 10. 安装 web 前端
 # -----------------------------
-echo "[9/10] 安装 web 前端..."
+echo "[10/10] 安装 web 前端..."
 
 wget -O /tmp/web.tar.gz $WEB_DOWNLOAD_URL
 tar -xzf /tmp/web.tar.gz -C $INSTALL_DIR
-
-# -----------------------------
-# 10. 启动服务
-# -----------------------------
-echo "[10/10] 启动服务..."
 
 systemctl restart reality-panel
 
