@@ -3,7 +3,7 @@
 set -e
 
 # ================================
-# init-panel 一键初始化脚本（最终修复版）
+# init-panel 一键初始化脚本（最终可运行版）
 # ================================
 
 # -------- 基础变量 --------
@@ -13,7 +13,7 @@ WEB_DIR="$PANEL_DIR/web"
 BIN_PATH="$PANEL_DIR/panel"
 SERVICE_FILE="/etc/systemd/system/init-panel.service"
 
-# -------- ZeroSSL API Key（你提供的） --------
+# -------- ZeroSSL API Key --------
 ZEROSSL_API_KEY="b1ff7e16f47a369d19cfb928e48c21f2"
 
 # -------- 自动检测服务器 IP --------
@@ -96,9 +96,8 @@ info "获取验证文件"
 VALIDATION=$(curl -s "https://api.zerossl.com/certificates/$CERT_ID?access_key=$ZEROSSL_API_KEY")
 
 # 提取验证文件内容（数组 → 多行文本）
-FILE_CONTENT=$(echo "$VALIDATION" | grep -o '"file_validation_content":
-
-\[[^]]*' \
+FILE_CONTENT=$(echo "$VALIDATION" \
+  | grep -o '"file_validation_content":[^}]*' \
   | sed 's/"file_validation_content":
 
 \[//' \
@@ -109,7 +108,10 @@ FILE_CONTENT=$(echo "$VALIDATION" | grep -o '"file_validation_content":
   | tr ',' '\n')
 
 # 提取验证文件路径（从 URL 中提取路径部分）
-FILE_URL=$(echo "$VALIDATION" | grep -o '"file_validation_url_http":"[^"]*' | cut -d'"' -f4)
+FILE_URL=$(echo "$VALIDATION" \
+  | grep -o '"file_validation_url_http":"[^"]*' \
+  | cut -d'"' -f4)
+
 FILE_PATH=$(echo "$FILE_URL" | sed 's#http://[^/]*##')
 
 if [ -z "$FILE_PATH" ] || [ -z "$FILE_CONTENT" ]; then
@@ -124,7 +126,7 @@ echo "$FILE_CONTENT" > "$FILE_PATH"
 # 通知 ZeroSSL 开始验证
 info "通知 ZeroSSL 开始验证"
 
-curl -s -X POST "https://api.zerossl.com/certificates/$CERT_ID/challenges?access_key=$ZEROSSL_API_KEY"
+curl -s -X POST "https://api.zerossl.com/certificates/$CERT_ID/challenges?access_key=$ZEROSSL_API_KEY" >/dev/null
 
 # 轮询验证状态
 info "等待 ZeroSSL 验证..."
@@ -151,7 +153,7 @@ info "下载证书"
 curl -s "https://api.zerossl.com/certificates/$CERT_ID/download/return?access_key=$ZEROSSL_API_KEY" \
   -o "$TMP_DIR/cert.zip"
 
-unzip -o "$TMP_DIR/cert.zip" -d "$TMP_DIR"
+unzip -o "$TMP_DIR/cert.zip" -d "$TMP_DIR" >/dev/null
 
 cp "$TMP_DIR/certificate.crt" "$CERT_DIR/fullchain.cer"
 cp "$TMP_DIR/ca_bundle.crt" "$CERT_DIR/ca_bundle.cer"
