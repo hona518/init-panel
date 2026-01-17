@@ -3,7 +3,7 @@
 set -e
 
 echo "==========================================="
-echo " Reality Panel 一键安装脚本（Let’s Encrypt 版本）"
+echo " Reality Panel 一键安装脚本（Let’s Encrypt，无邮箱版本）"
 echo "==========================================="
 
 # -----------------------------
@@ -100,14 +100,17 @@ echo "[6/10] 安装 acme.sh..."
 curl https://get.acme.sh | sh
 
 # -----------------------------
-# 7. 使用 Let’s Encrypt 申请 IP 证书
+# 7. 使用 Let’s Encrypt 申请 IP 证书（无邮箱）
 # -----------------------------
 echo "[7/10] 申请 Let’s Encrypt IP 证书..."
 
-~/.acme.sh/acme.sh --register-account -m admin@$SERVER_IP --server letsencrypt
+# 匿名注册，无邮箱
+~/.acme.sh/acme.sh --register-account --server letsencrypt
 
+# 申请 IP 证书
 ~/.acme.sh/acme.sh --issue --insecure --standalone -d $SERVER_IP --keylength ec-256 --server letsencrypt
 
+# 安装证书
 ~/.acme.sh/acme.sh --install-cert -d $SERVER_IP \
   --key-file       $CERT_DIR/panel.key \
   --fullchain-file $CERT_DIR/panel.crt \
