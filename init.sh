@@ -13,10 +13,8 @@ WEB_DIR="$PANEL_DIR/web"
 BIN_PATH="$PANEL_DIR/panel"
 SERVICE_FILE="/etc/systemd/system/init-panel.service"
 
-# -------- 用户配置（已替换为你提供的 EAB） --------
-EMAIL="admin@example.com"
-ZEROSSL_EAB_KID="LNySi-BXwKx1B_fOUpq-Ag"
-ZEROSSL_EAB_HMAC="sn8twIvLZ9Xdd2MY379wd9E4XQTEtTx4Blwpgbd__WvePyYRDTNr4HPGd5NWzENyDRQfyRXxL5EF_KmstMahMg"
+# -------- ZeroSSL API Key（你提供的） --------
+ZEROSSL_API_KEY="b1ff7e16f47a369d19cfb928e48c21f2"
 
 # -------- 自动检测服务器 IP --------
 SERVER_IP=$(curl -s ipv4.ip.sb || curl -s ifconfig.me)
@@ -25,64 +23,131 @@ SERVER_IP=$(curl -s ipv4.ip.sb || curl -s ifconfig.me)
 info() { echo -e "\033[32m[INFO]\033[0m $1"; }
 error() { echo -e "\033[31m[ERROR]\033[0m $1"; exit 1; }
 
+mkdir -p "$PANEL_DIR" "$CERT_DIR" "$WEB_DIR"
+
 # ================================
 # 1. 环境准备
 # ================================
 info "更新系统并安装依赖"
 
 apt update -y
-apt install -y curl wget tar socat unzip
-
-mkdir -p "$PANEL_DIR" "$CERT_DIR" "$WEB_DIR"
+apt install -y curl wget tar unzip openssl
 
 # ================================
-# 2. 安装 acme.sh
+# 2. 申请 ZeroSSL IP 证书（API 方式）
 # ================================
-if [ ! -d ~/.acme.sh ]; then
-    info "安装 acme.sh"
-    curl https://get.acme.sh | sh
-else
-    info "acme.sh 已存在，跳过安装"
+info "开始申请 ZeroSSL IP 证书（API 模式）"
+
+TMP_DIR="/tmp/zerossl-ip"
+rm -rf "$TMP_DIR"
+mkdir -p "$TMP_DIR"
+
+# 生成私钥和 CSR
+info "生成私钥和 CSR（包含 IP SAN）"
+
+openssl genrsa -out "$TMP_DIR/private.key" 2048
+
+cat > "$TMP_DIR/csr.conf" <<EOF
+[ req ]
+default_bits       = 2048
+prompt             = no
+default_md         = sha256
+req_extensions     = req_ext
+distinguished_name = dn
+
+[ dn ]
+CN = $SERVER_IP
+
+[ req_ext ]
+subjectAltName = @alt_names
+
+[ alt_names ]
+IP.1 = $SERVER_IP
+EOF
+
+openssl req -new -key "$TMP_DIR/private.key" \
+  -out "$TMP_DIR/csr.csr" \
+  -config "$TMP_DIR/csr.conf"
+
+CSR_CONTENT=$(sed ':a;N;$!ba;s/\n/\\n/g' "$TMP_DIR/csr.csr")
+
+# 创建证书订单
+info "创建 ZeroSSL 证书订单"
+
+ORDER_RESPONSE=$(curl -s -X POST "https://api.zerossl.com/certificates?access_key=$ZEROSSL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"certificate_domains\": \"$SERVER_IP\",
+    \"certificate_validity_days\": 90,
+    \"certificate_csr\": \"$CSR_CONTENT\"
+  }")
+
+CERT_ID=$(echo "$ORDER_RESPONSE" | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+
+if [ -z "$CERT_ID" ]; then
+  error "证书订单创建失败：$ORDER_RESPONSE"
 fi
 
-# ================================
-# 3. 注册 ZeroSSL ACME 账户（EAB）
-# ================================
-info "注册 ZeroSSL ACME 账户"
+info "证书订单创建成功：$CERT_ID"
 
-~/.acme.sh/acme.sh --register-account \
-  --server zerossl \
-  --eab-kid "$ZEROSSL_EAB_KID" \
-  --eab-hmac-key "$ZEROSSL_EAB_HMAC" \
-  --accountemail "$EMAIL" \
-  --force
+# 获取验证文件
+info "获取验证文件"
+
+VALIDATION=$(curl -s "https://api.zerossl.com/certificates/$CERT_ID?access_key=$ZEROSSL_API_KEY")
+
+FILE_CONTENT=$(echo "$VALIDATION" | grep -o '"file_validation_content":"[^"]*' | cut -d'"' -f4)
+FILE_PATH=$(echo "$VALIDATION" | grep -o '"file_validation_path":"[^"]*' | cut -d'"' -f4)
+
+if [ -z "$FILE_PATH" ]; then
+  error "无法获取验证文件信息：$VALIDATION"
+fi
+
+info "写入验证文件：$FILE_PATH"
+
+mkdir -p "$(dirname "$FILE_PATH")"
+echo "$FILE_CONTENT" > "$FILE_PATH"
+
+# 通知 ZeroSSL 开始验证
+info "通知 ZeroSSL 开始验证"
+
+curl -s -X POST "https://api.zerossl.com/certificates/$CERT_ID/challenges?access_key=$ZEROSSL_API_KEY"
+
+# 轮询验证状态
+info "等待 ZeroSSL 验证..."
+
+while true; do
+  STATUS=$(curl -s "https://api.zerossl.com/certificates/$CERT_ID?access_key=$ZEROSSL_API_KEY" | grep -o '"status":"[^"]*' | cut -d'"' -f4)
+
+  if [ "$STATUS" = "issued" ]; then
+    info "证书已签发"
+    break
+  fi
+
+  if [ "$STATUS" = "cancelled" ] || [ "$STATUS" = "revoked" ]; then
+    error "证书验证失败，状态：$STATUS"
+  fi
+
+  sleep 3
+done
+
+# 下载证书
+info "下载证书"
+
+curl -s "https://api.zerossl.com/certificates/$CERT_ID/download/return?access_key=$ZEROSSL_API_KEY" \
+  -o "$TMP_DIR/cert.zip"
+
+unzip -o "$TMP_DIR/cert.zip" -d "$TMP_DIR"
+
+cp "$TMP_DIR/certificate.crt" "$CERT_DIR/fullchain.cer"
+cp "$TMP_DIR/ca_bundle.crt" "$CERT_DIR/ca_bundle.cer"
+cp "$TMP_DIR/private.key" "$CERT_DIR/private.key"
+
+info "证书已安装到：$CERT_DIR"
+
+rm -rf "$TMP_DIR"
 
 # ================================
-# 4. 申请 IP 证书
-# ================================
-info "申请 ZeroSSL IP 证书（IP: $SERVER_IP）"
-
-~/.acme.sh/acme.sh --issue \
-  --server zerossl \
-  --ip "$SERVER_IP" \
-  --standalone \
-  --keylength ec-256 \
-  --force
-
-# ================================
-# 5. 安装证书
-# ================================
-info "安装证书到 $CERT_DIR"
-
-~/.acme.sh/acme.sh --install-cert \
-  --server zerossl \
-  --ip "$SERVER_IP" \
-  --fullchain-file "$CERT_DIR/fullchain.cer" \
-  --key-file "$CERT_DIR/private.key" \
-  --reloadcmd "systemctl restart init-panel"
-
-# ================================
-# 6. 下载 panel 后端
+# 3. 下载 panel 后端
 # ================================
 info "下载 panel 后端"
 
@@ -92,7 +157,7 @@ wget -O "$BIN_PATH" \
 chmod +x "$BIN_PATH"
 
 # ================================
-# 7. 下载 web 前端
+# 4. 下载 web 前端
 # ================================
 info "下载 web 前端"
 
@@ -102,7 +167,7 @@ wget -O /tmp/web.tar.gz \
 tar -xzf /tmp/web.tar.gz -C "$WEB_DIR"
 
 # ================================
-# 8. 创建 systemd 服务
+# 5. 创建 systemd 服务
 # ================================
 info "创建 systemd 服务"
 
@@ -127,7 +192,7 @@ systemctl enable init-panel
 systemctl restart init-panel
 
 # ================================
-# 9. 完成
+# 6. 完成
 # ================================
 info "Init Panel 部署完成！"
 info "访问地址：https://$SERVER_IP"
