@@ -6,20 +6,16 @@ set -e
 # init-panel 一键初始化脚本（最终可运行版）
 # ================================
 
-# -------- 基础变量 --------
 PANEL_DIR="/etc/init-panel"
 CERT_DIR="$PANEL_DIR/cert"
 WEB_DIR="$PANEL_DIR/web"
 BIN_PATH="$PANEL_DIR/panel"
 SERVICE_FILE="/etc/systemd/system/init-panel.service"
 
-# -------- ZeroSSL API Key --------
 ZEROSSL_API_KEY="b1ff7e16f47a369d19cfb928e48c21f2"
 
-# -------- 自动检测服务器 IP --------
 SERVER_IP=$(curl -s ipv4.ip.sb || curl -s ifconfig.me)
 
-# -------- 输出函数 --------
 info() { echo -e "\033[32m[INFO]\033[0m $1"; }
 error() { echo -e "\033[31m[ERROR]\033[0m $1"; exit 1; }
 
@@ -28,23 +24,21 @@ mkdir -p "$PANEL_DIR" "$CERT_DIR" "$WEB_DIR"
 # ================================
 # 1. 环境准备
 # ================================
-info "更新系统并安装依赖"
+info "安装依赖"
 
 apt update -y
-apt install -y curl wget tar unzip openssl
+apt install -y curl wget tar unzip openssl jq
 
 # ================================
-# 2. 申请 ZeroSSL IP 证书（API 方式）
+# 2. ZeroSSL API 证书申请
 # ================================
-info "开始申请 ZeroSSL IP 证书（API 模式）"
+info "开始申请 ZeroSSL IP 证书"
 
 TMP_DIR="/tmp/zerossl-ip"
 rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
 
 # 生成私钥和 CSR
-info "生成私钥和 CSR（包含 IP SAN）"
-
 openssl genrsa -out "$TMP_DIR/private.key" 2048
 
 cat > "$TMP_DIR/csr.conf" <<EOF
@@ -71,9 +65,7 @@ openssl req -new -key "$TMP_DIR/private.key" \
 
 CSR_CONTENT=$(sed ':a;N;$!ba;s/\n/\\n/g' "$TMP_DIR/csr.csr")
 
-# 创建证书订单
-info "创建 ZeroSSL 证书订单"
-
+# 创建订单
 ORDER_RESPONSE=$(curl -s -X POST "https://api.zerossl.com/certificates?access_key=$ZEROSSL_API_KEY" \
   -H "Content-Type: application/json" \
   -d "{
@@ -82,41 +74,25 @@ ORDER_RESPONSE=$(curl -s -X POST "https://api.zerossl.com/certificates?access_ke
     \"certificate_csr\": \"$CSR_CONTENT\"
   }")
 
-CERT_ID=$(echo "$ORDER_RESPONSE" | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+CERT_ID=$(echo "$ORDER_RESPONSE" | jq -r '.id')
 
-if [ -z "$CERT_ID" ]; then
+if [ "$CERT_ID" = "null" ] || [ -z "$CERT_ID" ]; then
   error "证书订单创建失败：$ORDER_RESPONSE"
 fi
 
 info "证书订单创建成功：$CERT_ID"
 
-# 获取验证文件
-info "获取验证文件"
-
+# 获取验证信息
 VALIDATION=$(curl -s "https://api.zerossl.com/certificates/$CERT_ID?access_key=$ZEROSSL_API_KEY")
 
-# 提取验证文件内容（数组 → 多行文本）
-FILE_CONTENT=$(echo "$VALIDATION" \
-  | grep -o '"file_validation_content":[^}]*' \
-  | sed 's/"file_validation_content":
+FILE_URL=$(echo "$VALIDATION" | jq -r ".validation.other_methods.\"$SERVER_IP\".file_validation_url_http")
+FILE_CONTENT=$(echo "$VALIDATION" | jq -r ".validation.other_methods.\"$SERVER_IP\".file_validation_content[]")
 
-\[//' \
-  | sed 's/\]
-
-//' \
-  | tr -d '"' \
-  | tr ',' '\n')
-
-# 提取验证文件路径（从 URL 中提取路径部分）
-FILE_URL=$(echo "$VALIDATION" \
-  | grep -o '"file_validation_url_http":"[^"]*' \
-  | cut -d'"' -f4)
+if [ "$FILE_URL" = "null" ] || [ -z "$FILE_URL" ]; then
+  error "无法解析验证文件 URL：$VALIDATION"
+fi
 
 FILE_PATH=$(echo "$FILE_URL" | sed 's#http://[^/]*##')
-
-if [ -z "$FILE_PATH" ] || [ -z "$FILE_CONTENT" ]; then
-  error "无法解析验证文件信息：$VALIDATION"
-fi
 
 info "写入验证文件：$FILE_PATH"
 
@@ -124,16 +100,12 @@ mkdir -p "$(dirname "$FILE_PATH")"
 echo "$FILE_CONTENT" > "$FILE_PATH"
 
 # 通知 ZeroSSL 开始验证
-info "通知 ZeroSSL 开始验证"
-
 curl -s -X POST "https://api.zerossl.com/certificates/$CERT_ID/challenges?access_key=$ZEROSSL_API_KEY" >/dev/null
 
-# 轮询验证状态
 info "等待 ZeroSSL 验证..."
 
 while true; do
-  STATUS=$(curl -s "https://api.zerossl.com/certificates/$CERT_ID?access_key=$ZEROSSL_API_KEY" \
-    | grep -o '"status":"[^"]*' | cut -d'"' -f4)
+  STATUS=$(curl -s "https://api.zerossl.com/certificates/$CERT_ID?access_key=$ZEROSSL_API_KEY" | jq -r '.status')
 
   if [ "$STATUS" = "issued" ]; then
     info "证书已签发"
@@ -141,15 +113,13 @@ while true; do
   fi
 
   if [ "$STATUS" = "cancelled" ] || [ "$STATUS" = "revoked" ]; then
-    error "证书验证失败，状态：$STATUS"
+    error "证书验证失败：$STATUS"
   fi
 
   sleep 3
 done
 
 # 下载证书
-info "下载证书"
-
 curl -s "https://api.zerossl.com/certificates/$CERT_ID/download/return?access_key=$ZEROSSL_API_KEY" \
   -o "$TMP_DIR/cert.zip"
 
@@ -208,11 +178,4 @@ systemctl daemon-reload
 systemctl enable init-panel
 systemctl restart init-panel
 
-# ================================
-# 6. 完成
-# ================================
-info "Init Panel 部署完成！"
-info "访问地址：https://$SERVER_IP"
-info "证书路径：$CERT_DIR"
-info "前端路径：$WEB_DIR"
-info "后端路径：$BIN_PATH"
+info "部署完成，访问：https://$SERVER_IP"
